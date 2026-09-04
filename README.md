@@ -12,7 +12,7 @@ A worker node is made of three programs, all published here:
 
 | Binary | What it does |
 | --- | --- |
-| `worker` | the node itself |
+| `worker` | the node itself; `worker start` runs it |
 | `worker-updater` | optional supervisor that keeps `worker` up to date |
 | `keytool` | mints and manages the node identity and its wallet key |
 
@@ -21,7 +21,11 @@ A worker node is made of three programs, all published here:
 - Windows 10 version 22H2 64-bit or above
 - Ubuntu 14.04 64-bit or above (amd64 or arm64)
 - macOS Catalina version 10.15 or above (Apple Silicon or Intel)
-- A public IP address or a forwarded port, and disk space you are willing to allocate
+- Disk space you are willing to allocate
+
+No public IP address or port forwarding is required. A node behind NAT reaches the network
+through AIOZ relays, and will opportunistically try a UPnP/NAT-PMP port mapping to become
+directly dialable where the router allows it.
 
 ## Downloads
 
@@ -128,7 +132,11 @@ find the identity you just made.
 - Write down the **mnemonic phrase and the nonce**. Together they recreate the exact same identity
   without re-mining it, via `keytool create worker --mnemonic-file <file> --nonce <n>`.
 - Use a **dedicated key for each node**; **do not reuse** the key from your main wallet, exchange
-  account, or other nodes.
+  account, or other nodes. Running two nodes from one key **will get them disqualified**. The node
+  ID is derived from the key, so both machines present the same identity to the network, only one
+  of them holds any given piece, and the audits that land on the other one fail. Enough audit
+  failures disqualify the node, and **disqualification is permanent** - the node is out for good,
+  along with the rewards it had not yet withdrawn.
 - Store backups in an **offline, encrypted location** such as encrypted USB drives, air-gapped
   devices, or hardware security modules (HSM).
 - **Never paste** your mnemonic or private key into websites, chats, or support tickets.
@@ -155,7 +163,11 @@ Edit `config.yaml` to set at least:
 - `trust-sources` - the coordinator to join, as `<coordNodeID>@<host>:7777`
 - `storage.path` - where pieces are stored
 - `storage.allocated-disk-space` - how much you are contributing, for example `500GB`
-- `contact.external-address` - the address other nodes reach you on
+
+Leave the networking settings alone unless you know you need them. `server.have-public-address`
+defaults to `false`, which is the behind-NAT path: the node reserves a circuit on a relay and is
+reachable through it. Set it to `true`, and set `contact.external-address`, only if the machine
+really does have a public address other nodes can dial directly.
 
 Every setting can also be given as an environment variable with the `AIOZ_WORKER_` prefix, which
 takes precedence over `config.yaml`. For example `AIOZ_WORKER_STORAGE_ALLOCATED_DISK_SPACE=500GB`.
@@ -163,7 +175,7 @@ takes precedence over `config.yaml`. For example `AIOZ_WORKER_STORAGE_ALLOCATED_
 ### 3. Run the node
 
 ```shell
-./worker api --identity-dir ./identity/worker
+./worker start --identity-dir ./identity/worker
 ```
 
 Leave it running. On Windows, run it as a Windows Service so it starts at boot.
@@ -182,12 +194,13 @@ coordinator.
 ### Withdraw rewards
 
 ```shell
-./worker withdraw 0x9A20600a143745404f1AA1C69Bd280f4bD5B4408 --amount 12.50
+./worker withdraw 0x9A20600a143745404f1AA1C69Bd280f4bD5B4408 --amount 12.5
 ```
 
-`--amount` is in **US dollars**; omit it to withdraw everything available. What that converts to in
-AIOZ is decided when the request is settled. The coordinator records the request and an operator
-sends the funds. Only one request may be pending at a time - `worker balance` shows a pending one.
+`--amount` is in **AIOZ**, the same unit `worker balance` reports, so you can withdraw a figure you
+actually saw. Omit it to withdraw everything available. The coordinator records the request and an
+operator sends the funds. Only one request may be pending at a time - `worker balance` shows a
+pending one.
 
 Useful flags: `--dry-run` to see what would be requested without requesting it, `-y` to skip the
 confirmation prompt.

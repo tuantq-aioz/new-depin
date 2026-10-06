@@ -119,7 +119,39 @@ rewards. Creating one mines a node ID to a target difficulty, which takes a few 
 ```
 
 This writes `ca.cert`, `ca.key`, `ca.nonce`, `identity.cert`, `identity.key` and `priv_key.json`
-into `./identity/worker`, and prints the mnemonic phrase and the CA nonce.
+into `./identity/worker`.
+
+Standard output carries one JSON object with the node ID, the difficulty, the CA nonce, the
+mnemonic phrase and the wallet address.
+Human-readable notes go to standard error, so the JSON can be piped straight into a tool such as
+`jq`.
+
+```json
+{
+  "dir": "./identity/worker",
+  "node_id": "ab25549b-7df0-8d61-022c-adb805b8f001",
+  "node_id_hex": "ab25549b7df08d61022cadb805b8f001",
+  "difficulty": 36,
+  "nonce": 1,
+  "mnemonic": "<12 words>",
+  "address": "aioz16lcdz7ynkfluflesr0793esmpmah9z25ngupf8",
+  "address_hex": "0xD7f0D17893B27fC4fF301BFC58E61b0eFB728954"
+}
+```
+
+`address_hex` is a standard EVM address.
+Importing the private key into an EVM wallet such as MetaMask opens this same account.
+If you import the mnemonic instead, the key sits at derivation path `m/44'/60'/0'/0/1`, which
+MetaMask lists as the second account, not the first.
+
+Add `--secrets-out <file>` to also copy the mnemonic into a file created with `0600` permissions.
+Pass `--log.level debug` to see the internal steps.
+
+To print the node ID of an existing identity:
+
+```shell
+./keytool id worker --identity-dir ./identity
+```
 
 Pass `--identity-dir` explicitly, as above, and use the same path everywhere. `keytool` and
 `worker` do not default to the same location, so relying on the defaults leaves the node unable to
@@ -129,8 +161,11 @@ find the identity you just made.
 
 - Treat your `priv_key.json`, `identity.key` and mnemonic phrase as **wallet secrets**. Anyone who
   has them can **control your node rewards**.
-- Write down the **mnemonic phrase and the nonce**. Together they recreate the exact same identity
-  without re-mining it, via `keytool create worker --mnemonic-file <file> --nonce <n>`.
+- Write down the **mnemonic phrase**, and ideally the **nonce** and **difficulty** too.
+  The identity is derived deterministically, so the mnemonic alone rebuilds the exact same node ID
+  with `keytool create worker --mnemonic-file <file> --difficulty <d>`.
+  Adding `--nonce <n>` skips the search and rebuilds it instantly.
+  Backing up the whole `./identity/worker` directory works as well.
 - Use a **dedicated key for each node**; **do not reuse** the key from your main wallet, exchange
   account, or other nodes. Running two nodes from one key **will get them disqualified**. The node
   ID is derived from the key, so both machines present the same identity to the network, only one
@@ -160,17 +195,68 @@ Both the configuration and the identity directory can be moved with the global `
 
 Edit `config.yaml` to set at least:
 
-- `trust-sources` - the coordinator to join, as `<coordNodeID>@<host>:7777`
-- `storage.path` - where pieces are stored
-- `storage.allocated-disk-space` - how much you are contributing, for example `500GB`
+- `worker.trust.sources` - where the node learns which coordinators to trust (see below)
+- `worker.storage.path` - where pieces are stored
+- `worker.storage.allocated-disk-space` - how much you are contributing, for example `500GB`
 
-Leave the networking settings alone unless you know you need them. `server.have-public-address`
-defaults to `false`, which is the behind-NAT path: the node reserves a circuit on a relay and is
-reachable through it. Set it to `true`, and set `contact.external-address`, only if the machine
-really does have a public address other nodes can dial directly.
+Leave the networking settings alone unless you know you need them.
+`worker.server.have-public-address` defaults to `false`, which is the behind-NAT path: the node
+reserves a circuit on a relay and is reachable through it.
+Set it to `true`, and set `worker.contact.external-address`, only if the machine really does have
+a public address other nodes can dial directly.
 
 Every setting can also be given as an environment variable with the `AIOZ_WORKER_` prefix, which
-takes precedence over `config.yaml`. For example `AIOZ_WORKER_STORAGE_ALLOCATED_DISK_SPACE=500GB`.
+takes precedence over `config.yaml`.
+Drop the leading `worker.` and replace `.` and `-` with `_`.
+For example `worker.storage.allocated-disk-space` becomes
+`AIOZ_WORKER_STORAGE_ALLOCATED_DISK_SPACE=500GB`.
+
+#### Trust sources
+
+The node only accepts work from coordinators it trusts.
+`worker.trust.sources` is a comma-separated list, and each entry is one of:
+
+| Entry | Example |
+| --- | --- |
+| a trust file on disk | `/home/aioz/trust.txt` |
+| a trust file served over HTTP(S) | `https://example.com/aioz-trust.txt` |
+| a single coordinator URL | `<coordNodeID>@tcp:<host>:<port>` |
+
+A trust file is the recommended form.
+It holds one coordinator URL per line; blank lines and lines starting with `#` are ignored.
+
+```text
+# AIOZ DePIN trusted coordinators
+# Format: <coordNodeID>@tcp:<host>:<port>
+ab25549b-7df0-8d61-022c-adb805b8f001@tcp:coord1.example.com:7777
+5c0e3f6a-91d2-4b7e-8a44-2f6d1e9b0c37@tcp:203.0.113.10:7777
+```
+
+- `<coordNodeID>` is the coordinator's node ID in UUID form, as `keytool id` prints it in
+  `node_id`.
+- The `tcp:` prefix is required.
+  A URL written as `<coordNodeID>@<host>:<port>` is accepted without an error but leaves the node
+  with no address to dial.
+
+Point the node at the file, either in `config.yaml`:
+
+```yaml
+worker.trust.sources: /home/aioz/trust.txt
+```
+
+or at setup time, which writes the same line:
+
+```shell
+./worker setup --identity-dir ./identity/worker --worker.trust.sources /home/aioz/trust.txt
+```
+
+or through the environment: `AIOZ_WORKER_TRUST_SOURCES=/home/aioz/trust.txt`.
+
+The node re-reads its sources roughly every 6 hours, so a coordinator added to the file is picked
+up without a restart; restart the node to apply a change immediately.
+Run `./worker start --log.level debug` once to confirm the file was read: the log shows
+`Fetched URLs from source` with the file path and `count`, followed by `Coord is trusted` for each
+entry.
 
 ### 3. Run the node
 
@@ -205,14 +291,29 @@ pending one.
 Useful flags: `--dry-run` to see what would be requested without requesting it, `-y` to skip the
 confirmation prompt.
 
-### Recover a key from a mnemonic phrase
+### Recover a node identity from a mnemonic phrase
 
 ```shell
-./keytool recover --mnemonic-file mnemonic.txt
+./keytool create worker --identity-dir ./identity --mnemonic-file mnemonic.txt --difficulty 36
 ```
+
+Use the difficulty the identity was created with, or add `--nonce <n>` to skip the search.
+The result is the same node ID and wallet as the original.
+
+### Recover only the wallet key
+
+```shell
+./keytool recover worker --identity-dir ./identity --mnemonic-file mnemonic.txt
+```
+
+This restores `priv_key.json` into `./identity/worker` and prints the wallet address.
+It does **not** restore the node's CA, so it is not a way to bring a node back: use
+`keytool create` as shown above for that.
 
 The phrase is read from a file or from standard input, never from a command-line argument, so that
 it cannot leak through your shell history or the process list.
+The password that encrypts the printed key armor is prompted for on the terminal; leave it empty to
+skip encryption, or pass `--password-file` to run non-interactively.
 
 ## Automatic updates
 
